@@ -247,7 +247,9 @@ def train(args, opts):
     for epoch in range(epoch_start, args.epochs):
         if opts.eval_only:
             with torch.no_grad():
-                evaluate(model, test_loader, args.n_frames)
+                mpjpe, data_inference = evaluate(model, test_loader, args.n_frames)
+                save_data_inference(opts.new_checkpoint, data_inference, latest=True)
+                print(f"[INFO] Evaluation complete. Results saved to {opts.new_checkpoint}/inference_data.mat")
                 exit()
             
         print(f"[INFO] epoch {epoch}")
