@@ -9,7 +9,7 @@ random.seed(0)
 
 class DataReaderH36M(object):
     def __init__(self, n_frames, sample_stride, data_stride_train, data_stride_test, read_confidence=True,
-                 dt_root='data/motion3d', dt_file='h36m_cpn_cam_source.pkl'):
+                 dt_root='data/motion3d', dt_file='h36m_cpn_cam_source.pkl', use_gt_2d=False):
         self.gt_trainset = None
         self.gt_testset = None
         self.split_id_train = None
@@ -21,10 +21,16 @@ class DataReaderH36M(object):
         self.data_stride_train = data_stride_train
         self.data_stride_test = data_stride_test
         self.read_confidence = read_confidence
+        self.use_gt_2d = use_gt_2d
 
     def read_2d(self):
-        trainset = self.dt_dataset['train']['joint_2d'][::self.sample_stride, :, :2].astype(np.float32)  # [N, 17, 2]
-        testset = self.dt_dataset['test']['joint_2d'][::self.sample_stride, :, :2].astype(np.float32)  # [N, 17, 2]
+        # Use GT 2D (from joint3d_image x,y) for P1† evaluation, or detected 2D (joint_2d) for P1
+        if self.use_gt_2d:
+            trainset = self.dt_dataset['train']['joint3d_image'][::self.sample_stride, :, :2].astype(np.float32)
+            testset = self.dt_dataset['test']['joint3d_image'][::self.sample_stride, :, :2].astype(np.float32)
+        else:
+            trainset = self.dt_dataset['train']['joint_2d'][::self.sample_stride, :, :2].astype(np.float32)
+            testset = self.dt_dataset['test']['joint_2d'][::self.sample_stride, :, :2].astype(np.float32)
         # map to [-1, 1]
         for idx, camera_name in enumerate(self.dt_dataset['train']['camera_name']):
             if camera_name == '54138969' or camera_name == '60457274':
@@ -43,7 +49,12 @@ class DataReaderH36M(object):
                 assert 0, '%d data item has an invalid camera name' % idx
             testset[idx, :, :] = testset[idx, :, :] / res_w * 2 - [1, res_h / res_w]
         if self.read_confidence:
-            if 'confidence' in self.dt_dataset['train'].keys():
+            # For GT 2D, use confidence = 1.0 for all joints (perfect detection)
+            # For detected 2D, use the actual confidence scores from the detector
+            if self.use_gt_2d:
+                train_confidence = np.ones((trainset.shape[0], trainset.shape[1], 1), dtype=np.float32)
+                test_confidence = np.ones((testset.shape[0], testset.shape[1], 1), dtype=np.float32)
+            elif 'confidence' in self.dt_dataset['train'].keys():
                 train_confidence = self.dt_dataset['train']['confidence'][::self.sample_stride].astype(np.float32)
                 test_confidence = self.dt_dataset['test']['confidence'][::self.sample_stride].astype(np.float32)
                 if len(train_confidence.shape) == 2:  # (1559752, 17)
