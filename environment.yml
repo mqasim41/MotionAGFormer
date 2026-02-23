@@ -1,0 +1,33 @@
+name: motionagformer
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.8.10
+  - pip
+  - cudatoolkit=11.7
+  - pip:
+      - torch==1.13.1+cu117
+      - torchvision==0.14.1+cu117
+      - --extra-index-url https://download.pytorch.org/whl/cu117
+      - tqdm
+      - easydict
+      - numpy
+      - timm==0.6.11
+      - PyYAML
+      - matplotlib
+      - wandb
+      - torchprofile
+      - smplx
+      - scipy
+      - opencv-python
+      - numba
+      - scikit-image
+      - filterpy
+      - yacs
+      - h5py
+      - gdown
+      - dtaidistance
+      - scikit-learn
