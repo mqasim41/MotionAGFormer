@@ -108,32 +108,40 @@ def compute_mpjje(predicted, target):
 
 def compute_dtw(predicted, target):
     """
-    Dynamic Time Warping distance between predicted and ground truth sequences.
+    Normalized Dynamic Time Warping distance between predicted and ground truth.
 
     Flattens each frame to a vector (J*3,) and computes DTW with Euclidean distance.
+    Result is normalized by the warping path length so that the value represents
+    an average per-frame alignment cost (in mm), independent of sequence length.
 
     Args:
         predicted: np.ndarray of shape (T, J, 3)
         target:    np.ndarray of shape (T, J, 3)
 
     Returns:
-        float: DTW distance (mm), lower is better
+        float: Normalized DTW distance (mm/frame), lower is better
     """
+    T_pred = predicted.shape[0]
+    T_gt   = target.shape[0]
+    pred_flat = predicted.reshape(T_pred, -1)
+    gt_flat   = target.reshape(T_gt, -1)
+
     try:
         from dtaidistance import dtw_ndim
-        pred_flat = predicted.reshape(predicted.shape[0], -1).astype(np.double)
-        gt_flat   = target.reshape(target.shape[0], -1).astype(np.double)
-        distance = dtw_ndim.distance(pred_flat, gt_flat)
-        return float(distance)
-    except ImportError:
-        # Fallback: simple DTW with scipy
+        pred_d = pred_flat.astype(np.double)
+        gt_d   = gt_flat.astype(np.double)
+        # Use full DTW to get warping path for normalization
+        path = dtw_ndim.warping_path(pred_d, gt_d)
+        if path:
+            cost = sum(np.linalg.norm(pred_flat[i] - gt_flat[j]) for i, j in path)
+            return float(cost / len(path))
+        else:
+            distance = dtw_ndim.distance(pred_d, gt_d)
+            return float(distance / max(T_pred, T_gt))
+    except (ImportError, AttributeError):
+        # Fallback: simple DTW with dynamic programming
         from scipy.spatial.distance import cdist
-        T_pred = predicted.shape[0]
-        T_gt   = target.shape[0]
-        pred_flat = predicted.reshape(T_pred, -1)
-        gt_flat   = target.reshape(T_gt, -1)
         cost_matrix = cdist(pred_flat, gt_flat, metric='euclidean')
-        # Compute DTW with dynamic programming
         dtw_matrix = np.full((T_pred + 1, T_gt + 1), np.inf)
         dtw_matrix[0, 0] = 0
         for i in range(1, T_pred + 1):
@@ -141,7 +149,9 @@ def compute_dtw(predicted, target):
                 dtw_matrix[i, j] = cost_matrix[i-1, j-1] + min(
                     dtw_matrix[i-1, j], dtw_matrix[i, j-1], dtw_matrix[i-1, j-1]
                 )
-        return float(dtw_matrix[T_pred, T_gt])
+        # Normalize by path length (at least max(T_pred, T_gt) steps)
+        path_length = T_pred + T_gt - 1  # upper bound on path length
+        return float(dtw_matrix[T_pred, T_gt] / path_length)
 
 
 def compute_frechet_distance(mu1, sigma1, mu2, sigma2):
@@ -177,7 +187,8 @@ def compute_fid(predicted_sequences, target_sequences):
 
     Instead of image features from InceptionV3, we use flattened per-frame
     pose vectors (J*3 dimensions) as the feature representation.
-    Computes FD between the distributions of predicted vs real frames.
+    Poses are standardized (zero mean, unit variance) before computing the
+    Fréchet distance so that the metric is scale-invariant.
 
     Args:
         predicted_sequences: list of np.ndarray, each (T_i, J, 3)
@@ -189,6 +200,12 @@ def compute_fid(predicted_sequences, target_sequences):
     # Collect all frames
     pred_frames = np.concatenate([s.reshape(s.shape[0], -1) for s in predicted_sequences], axis=0)
     gt_frames   = np.concatenate([s.reshape(s.shape[0], -1) for s in target_sequences], axis=0)
+
+    # Standardize using ground truth statistics (so the scale is consistent)
+    gt_mean = np.mean(gt_frames, axis=0)
+    gt_std  = np.std(gt_frames, axis=0) + 1e-8
+    pred_frames = (pred_frames - gt_mean) / gt_std
+    gt_frames   = (gt_frames   - gt_mean) / gt_std
 
     mu_pred = np.mean(pred_frames, axis=0)
     mu_gt   = np.mean(gt_frames, axis=0)
@@ -206,8 +223,8 @@ def compute_fvd(predicted_sequences, target_sequences, window_size=16):
     Each feature vector is a flattened window of consecutive frames:
       feature = [frame_t, frame_{t+1}, ..., frame_{t+W-1}]  →  (W * J * 3,)
 
-    When feature dimensionality is high relative to sample count, PCA is used
-    to reduce dimensions and avoid singular covariance matrices.
+    Poses are standardized before windowing. When feature dimensionality is
+    high relative to sample count, PCA is used to reduce dimensions.
 
     Args:
         predicted_sequences: list of np.ndarray, each (T_i, J, 3)
@@ -217,13 +234,29 @@ def compute_fvd(predicted_sequences, target_sequences, window_size=16):
     Returns:
         float: FVD score (lower is better)
     """
+    # Standardize poses using ground truth statistics before windowing
+    all_gt_frames = np.concatenate([s.reshape(s.shape[0], -1) for s in target_sequences], axis=0)
+    gt_mean = np.mean(all_gt_frames, axis=0)
+    gt_std  = np.std(all_gt_frames, axis=0) + 1e-8
+
+    def normalize_sequences(sequences):
+        """Standardize each sequence using global GT statistics."""
+        normed = []
+        for seq in sequences:
+            flat = seq.reshape(seq.shape[0], -1)
+            flat = (flat - gt_mean) / gt_std
+            normed.append(flat.reshape(seq.shape))
+        return normed
+
+    pred_normed = normalize_sequences(predicted_sequences)
+    gt_normed   = normalize_sequences(target_sequences)
+
     def extract_st_features(sequences, w):
         """Extract sliding-window spatiotemporal features from a list of sequences."""
         features = []
         for seq in sequences:
             T = seq.shape[0]
             if T < w:
-                # Pad by repeating last frame
                 pad = np.tile(seq[-1:], (w - T, 1, 1))
                 seq = np.concatenate([seq, pad], axis=0)
                 T = w
@@ -233,22 +266,21 @@ def compute_fvd(predicted_sequences, target_sequences, window_size=16):
                 features.append(window)
         return np.array(features) if features else np.zeros((1, w * sequences[0].shape[1] * 3))
 
-    pred_features = extract_st_features(predicted_sequences, window_size)
-    gt_features   = extract_st_features(target_sequences, window_size)
+    pred_features = extract_st_features(pred_normed, window_size)
+    gt_features   = extract_st_features(gt_normed, window_size)
 
     n_samples = min(pred_features.shape[0], gt_features.shape[0])
     n_dims = pred_features.shape[1]
 
     # If feature dimensionality is too high relative to samples, reduce with PCA
-    # to avoid singular covariance matrices
     max_dims = min(n_dims, max(n_samples // 2, 50))
     if n_dims > max_dims:
         from sklearn.decomposition import PCA
         pca = PCA(n_components=max_dims)
         all_features = np.concatenate([pred_features, gt_features], axis=0)
         all_features = pca.fit_transform(all_features)
-        pred_features = all_features[:pred_features.shape[0]]
-        gt_features   = all_features[pred_features.shape[0]:]
+        pred_features = all_features[:len(pred_features)]
+        gt_features   = all_features[len(pred_features):]
 
     mu_pred = np.mean(pred_features, axis=0)
     mu_gt   = np.mean(gt_features, axis=0)
@@ -507,7 +539,7 @@ def main():
     print("="*60)
     for name, val in results.items():
         unit = {"MPJVE": "mm/frame", "MPJAE": "mm/frame²", "MPJJE": "mm/frame³",
-                "DTW": "mm", "FID": "", "FVD": ""}
+                "DTW": "mm/frame (normalized)", "FID": "(normalized)", "FVD": "(normalized)"}
         if val is not None:
             print(f"  {name:8s}: {val:.4f} {unit.get(name, '')}")
         else:
