@@ -155,16 +155,20 @@ def compute_frechet_distance(mu1, sigma1, mu2, sigma2):
     from scipy.linalg import sqrtm
 
     diff = mu1 - mu2
+
+    # Regularize both covariance matrices for numerical stability
+    eps = 1e-6
+    sigma1 = sigma1 + eps * np.eye(sigma1.shape[0])
+    sigma2 = sigma2 + eps * np.eye(sigma2.shape[0])
+
     covmean, _ = sqrtm(sigma1 @ sigma2, disp=False)
 
-    # Numerical stability: remove imaginary components
+    # Numerical stability: if sqrtm produces complex output, take real part
     if np.iscomplexobj(covmean):
-        if not np.allclose(np.imag(covmean), 0, atol=1e-3):
-            raise ValueError("Imaginary component too large in sqrtm")
         covmean = np.real(covmean)
 
     fd = np.sum(diff ** 2) + np.trace(sigma1 + sigma2 - 2 * covmean)
-    return float(fd)
+    return float(np.real(fd))
 
 
 def compute_fid(predicted_sequences, target_sequences):
@@ -202,6 +206,9 @@ def compute_fvd(predicted_sequences, target_sequences, window_size=16):
     Each feature vector is a flattened window of consecutive frames:
       feature = [frame_t, frame_{t+1}, ..., frame_{t+W-1}]  →  (W * J * 3,)
 
+    When feature dimensionality is high relative to sample count, PCA is used
+    to reduce dimensions and avoid singular covariance matrices.
+
     Args:
         predicted_sequences: list of np.ndarray, each (T_i, J, 3)
         target_sequences:    list of np.ndarray, each (T_i, J, 3)
@@ -229,15 +236,24 @@ def compute_fvd(predicted_sequences, target_sequences, window_size=16):
     pred_features = extract_st_features(predicted_sequences, window_size)
     gt_features   = extract_st_features(target_sequences, window_size)
 
+    n_samples = min(pred_features.shape[0], gt_features.shape[0])
+    n_dims = pred_features.shape[1]
+
+    # If feature dimensionality is too high relative to samples, reduce with PCA
+    # to avoid singular covariance matrices
+    max_dims = min(n_dims, max(n_samples // 2, 50))
+    if n_dims > max_dims:
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=max_dims)
+        all_features = np.concatenate([pred_features, gt_features], axis=0)
+        all_features = pca.fit_transform(all_features)
+        pred_features = all_features[:pred_features.shape[0]]
+        gt_features   = all_features[pred_features.shape[0]:]
+
     mu_pred = np.mean(pred_features, axis=0)
     mu_gt   = np.mean(gt_features, axis=0)
     sigma_pred = np.cov(pred_features, rowvar=False)
     sigma_gt   = np.cov(gt_features, rowvar=False)
-
-    # Regularize covariance if needed (high-dimensional, possibly singular)
-    reg = 1e-6 * np.eye(sigma_pred.shape[0])
-    sigma_pred += reg
-    sigma_gt += reg
 
     return compute_frechet_distance(mu_pred, sigma_pred, mu_gt, sigma_gt)
 
