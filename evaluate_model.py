@@ -397,7 +397,7 @@ def main():
             temporal = compute_all_temporal(paired_sequences, fvd_window=opts.fvd_window)
             for name, val in temporal.items():
                 unit = {"MPJVE": "mm/frame", "MPJAE": "mm/frame²", "MPJJE": "mm/frame³",
-                        "DTW": "mm", "FID": "", "FVD": ""}
+                        "DTW": "mm/frame (normalized)", "FID": "(normalized)", "FVD": "(normalized)"}
                 if val is not None:
                     all_metrics[name] = round(val, 4)
                     print(f"  {name:8s}: {val:.4f} {unit.get(name, '')}")
